@@ -19,10 +19,12 @@ This step aimed to assess whether biometric features like sex and age could be p
 
 - **Sex Prediction**:
   - **Model**: DenseNet121 (pre-trained on ImageNet)
-  - **Method**: 10-fold cross-validation for binary classification (sex prediction)
+  - **Method**: 10-fold cross-validation for binary classification
   - **Performance**: AUROC between 0.8790-0.8994 on the test set
 
 - **Age Group Prediction**:
+  - **Model**: DenseNet121 (pre-trained on ImageNet)
+  - **Method**: 10-fold cross-validation for binary classification
   - **Classes**: 
     - 0-18 years old
     - 18-40 years old
