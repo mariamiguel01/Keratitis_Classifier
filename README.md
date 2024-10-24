@@ -1,73 +1,41 @@
-### **Study Overview**
-Keratitis, an inflammatory condition of the cornea, is a significant cause of visual impairment in low- and middle-income countries (LMICs). The condition can be caused by bacteria, fungi, or amoeba, and timely, accurate diagnosis is essential for selecting the appropriate treatment and preserving vision. In LMICs, however, the limited availability and high cost of laboratory diagnostics often result in reliance on less accurate clinical observation. This study aimed to develop a deep learning framework to assist in diagnosing the source of keratitis infections using a Brazilian cornea dataset.
 
-### **Dataset**
-- **Source**: Brazilian cornea dataset
-- **Total Observations**: 24,692
-- **Positive Infection Cases**: 2,064
-  - **Breakdown**:
-    - Bacteria: 56.98%
-    - Fungi: 13.42%
-    - Amoeba: 10.03%
-    - Bacteria and Fungi: 10.32%
-    - Amoeba and Bacteria: 9.26%
+## 1. **Context and Study Goals**
+Keratitis is a significant cause of visual impairment, particularly in low- and middle-income countries (LMICs), where it accounts for around 10% of cases. This condition is often caused by bacterial, fungal, or amoebic infections. Due to limited access to laboratory diagnostics, clinicians in LMICs must often rely on clinical observation alone, which is less accurate. The goal of this study was to develop a deep learning framework capable of diagnosing the source of infection from corneal images, aiding more timely and accurate decision-making.
 
-### **Methodology**
+## 2. **Dataset Definition**
+The study utilized a dataset of corneal images collected from a Brazilian cohort, comprising 24,692 observations. Of these, 2,064 were confirmed cases of infection, with the following distribution: 
+- **56.98%** bacterial infections
+- **13.42%** fungal infections
+- **10.03%** amoeba infections
+- **10.32%** bacterial and fungal co-infections
+- **9.26%** amoeba and bacterial co-infections.
 
-#### **1. Biometric Feature Prediction**
-This step aimed to assess whether biometric features like sex and age could be predicted from infected eye photographs. 
+These images underwent preprocessing and were used to train and test the deep learning models.
 
-- **Sex Prediction**:
-  - **Model**: DenseNet121 (pre-trained on ImageNet)
-  - **Method**: 10-fold cross-validation for binary classification
-  - **Performance**: AUROC between 0.8790-0.8994 on the test set
+## 3. **Patient Feature Prediction (Age and Sex)**
+To evaluate how much biometric information (age and sex) could still be detected from infected corneal images, a DenseNet121 model pre-trained on ImageNet was used with a 10-fold cross-validation methodology:
+- **Sex Prediction:** A binary classifier was trained to predict sex from corneal images, achieving an AUROC of **0.8790-0.8994** on the test set.
+- **Age Prediction:** A multi-class classifier was trained to categorize age into four groups (0-18, 18-40, 40-65, and 65+ years). The AUROC ranged from **0.8331-0.8624** on the test set.
 
-- **Age Group Prediction**:
-  - **Model**: DenseNet121 (pre-trained on ImageNet)
-  - **Method**: 10-fold cross-validation for binary classification
-  - **Classes**: 
-    - 0-18 years old
-    - 18-40 years old
-    - 40-65 years old
-    - More than 65 years old
-  - **Performance**: AUROC between 0.8331-0.8624 on the test set
+Several metrics, confusion matrices, and saliency maps were used for evaluation.
 
-#### **2. Disease Prediction**
-Three approaches were implemented for infection type classification:
+## 4. **Disease Prediction**
+Three approaches were compared for predicting the type of infection:
+1. **Single-task Approach:** Separate DenseNet architectures for each infection (bacteria, fungi, and amoeba).
+2. **Multitask Approach V1:** A shared DenseNet backbone with parallel classification layers for each infection type.
+3. **Multitask Approach V2:** A DenseNet backbone with a multi-head classification layer for multitask learning.
 
-- **First Approach**: 
-  - Three separate DenseNet models (pre-trained on ImageNet) were responsible for binary classification of each infection type.
+The best results were obtained with **Multitask V2** combined with a **Clinical Loss Function** and an **Adaptive Threshold Methodology (Youden’s Statistic)**. The AUROC values on the test set were:
+- **Bacteria:** 0.7413-0.7740
+- **Fungi:** 0.8395-0.8725
+- **Amoeba:** 0.9448-0.9616
 
-- **Second Approach (Multitask V1)**:
-  - A shared DenseNet backbone was used with three parallel classification layers, each responsible for one infection type (bacteria, fungi, amoeba).
-  
-- **Third Approach (Multitask V2)**:
-  - A similar DenseNet backbone with a multi-head classification layer for multitask learning.
+## 5. **Patient Feature Influence on Diagnosis**
+To evaluate whether age and sex influence the infection predictions, statistical analyses were performed:
+- **Sex Influence:** A T-test revealed that sex significantly affects the prediction of amoeba infections.
+- **Age Influence:** ANOVA showed that age significantly affects the predictions of bacterial and fungal infections.
 
-#### **3. Model Enhancements**
-- **Clinical Loss Function**: Applied to the multitask V2 architecture.
-- **Adaptive Threshold Methodology**: Youden’s Statistic was used to improve classification thresholds.
+However, further analysis with a balanced age distribution is needed for stronger conclusions about the influence of age on the predictions.
 
-#### **Performance Comparison**
-The performance was compared across the models, with Multitask V2 using clinical loss considered the best. Results across 10 folds for AUROC on the test set:
-
-- **Bacteria**: 0.7413-0.7740
-- **Fungi**: 0.8395-0.8725
-- **Amoeba**: 0.9448-0.9616
-
-### **Influence of Identity Features on Disease Prediction**
-- **Statistical Analysis**:
-  - **Sex**: T-test results indicated that sex significantly affects amoeba infection predictions.
-  - **Age**: ANOVA results showed that age significantly affects fungi and bacteria infection predictions.
-
-However, a more balanced dataset (age-wise) is recommended for more conclusive results.
-
-### **Conclusion**
-- The study successfully developed a deep learning framework that can accurately predict bacterial, fungal, and amoebic keratitis using corneal photographs.
-- **Biometric Information**: Both sex and age were identifiable from the images, suggesting the potential benefit of using disentanglement techniques to ensure diagnosis models rely purely on medical features rather than demographic characteristics.
-
-
-
-
-
-
+## 6. **Conclusion**
+This study demonstrated that it is possible to accurately predict the type of keratitis infection (bacterial, fungal, or amoebic) from corneal images using deep learning techniques. Additionally, age and sex information were found to be identifiable from the corneal photographs, suggesting the potential need for disentanglement strategies to ensure diagnosis focuses solely on medical features. These findings provide promising insights for improving diagnostic accuracy in LMICs where resources are limited.
