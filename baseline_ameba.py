@@ -41,7 +41,7 @@ from sklearn.metrics import (
 
 import scipy.stats as st
 
-# Class: VGG16
+# Class: VGG16- not the best model, improvements were made for DenseNet
 class VGG16(torch.nn.Module):
     def __init__(self, channels, height, width, nr_classes):
         super(VGG16, self).__init__()
@@ -62,7 +62,7 @@ class VGG16(torch.nn.Module):
         _in_features = self.vgg16(_in_features)
         _in_features = _in_features.size(0) * _in_features.size(1) * _in_features.size(2) * _in_features.size(3)
 
-        # Create FC1 Layer for classification
+        # Create FC1 Layer for  binary classification
         if nr_classes == 2:
             self.fc1 = torch.nn.Linear(in_features=_in_features, out_features=1)
         else:
@@ -111,13 +111,14 @@ class DenseNet121(torch.nn.Module):
         _in_features = self.AvgPool2d(_in_features)
         _in_features = _in_features.size(1) * _in_features.size(2) * _in_features.size(3)
         
-        # Create FC1 Layer for classification
+        # Create FC1 Layer for binary classification
         if nr_classes == 2:
             self.fc1 = torch.nn.Linear(in_features=_in_features, out_features=1)
         else:
             self.fc1 = torch.nn.Linear(in_features=_in_features, out_features=nr_classes)
         
         return
+    #respnsible for unfreezing at 10 epochs
     def freezelayers(self):
         for param in self.densenet121.parameters():
             param.requires_grad = False
@@ -150,7 +151,7 @@ def aggregate_classifications(group):
     return group.iloc[0]
 
 
-# Class: CorneaUnifespDataset
+# Class: CorneaUnifespDataset loads the dataset as well as the GT and the sex and age bin of each image
 class CorneaUnifespDataset(Dataset):
 
     # Method: __init__
@@ -167,15 +168,13 @@ class CorneaUnifespDataset(Dataset):
             transform=None, 
             classification=None):
         
-        #assert int(train_size+val_size+test_size) == 1
-        #assert split in ('train', 'validation', 'test')
+   
 
         # Assign class variables
         self.csv_file_path = csv_file_path
         self.image_directory = image_directory
         self.image_directory_flipped = image_directory_flipped
-        #self.seed = seed
-        #self.train_size, self.val_size, self.test_size = train_size, val_size, test_size
+     
         
 
         # Open CSV file
@@ -221,54 +220,7 @@ class CorneaUnifespDataset(Dataset):
             filtered_patients_info_coleta['idade'] = pd.cut(filtered_patients_info_coleta['Idade'], bins=bins, labels=labels, right=False)
             filtered_patients_info_coleta['idade'] = filtered_patients_info_coleta['idade'].astype(int)
             y_age = filtered_patients_info_coleta['idade']
-        """
-        # Split into train+val and test
-        X_train_val, X_test, y_train_val, y_test = train_test_split(
-            X, 
-            y, 
-            test_size=self.test_size, 
-            random_state=self.seed, 
-            stratify=y
-        )
-
-        # Split into train and val
-        X_train, X_val, y_train, y_val = train_test_split(
-            X_train_val, 
-            y_train_val, 
-            train_size=(self.train_size/(self.train_size+self.val_size)), 
-            random_state=42,
-            stratify=y_train_val
-        )
-
-        # print(len(X_train)/len(X), self.train_size)
-        # print(len(X_val)/len(X), self.val_size)
-        # print(len(X_test)/len(X), self.test_size) 
-
-        # Prepare dataset
-        train_image_fnames, val_image_fnames, test_image_fnames, y_train_, y_val_, y_test_ = self.load_and_preprocess_data(
-            X_train,
-            X_val,
-            X_test,
-            y_train,
-            y_val,
-            y_test
-        )
-
-        # Check the splits
-        if split == 'train':
-            images = train_image_fnames.copy()
-            labels = y_train_.copy()
-        elif split == 'validation':
-            images = val_image_fnames.copy()
-            labels = y_val_.copy()
-        else:
-            images = test_image_fnames.copy()
-            labels = y_test_.copy()
         
-        self.images = images
-        self.labels = labels
-        self.transform = transform
-        """
         image_fnames, y_train_,y_age,y_sex= self.load_and_preprocess_data(
            X , y, y_age, y_sex
         )
@@ -293,21 +245,7 @@ class CorneaUnifespDataset(Dataset):
         patients_info = patients_info[patients_info['file_names'].isin(image_filenames)| patients_info['file_names'].isin(image_filenames_flipped)]
         return patients_info
 
-    """
-    # Method: load_and_preprocess_data
-    def load_and_preprocess_data(self, X_train, X_val, X_test, y_train, y_val, y_test):
-    
-        # Get file lists
-        train_image_fnames = X_train['file_names'].tolist()
-        val_image_fnames = X_val['file_names'].tolist()
-        test_image_fnames = X_test['file_names'].tolist()
 
-        y_train_ = y_train.values
-        y_val_ = y_val.values
-        y_test_ = y_test.values
-        
-        return train_image_fnames, val_image_fnames, test_image_fnames, y_train_, y_val_, y_test_
-    """
     def load_and_preprocess_data(self, X, y,y_age,y_sex):
     
         # Get file lists
@@ -323,7 +261,7 @@ class CorneaUnifespDataset(Dataset):
         return len(self.images)
 
 
-    # Method: __getitem__
+    # Method: __getitem__ males sure the flipped image is also retrieved
     def __getitem__(self, idx):
 
         # Get image fname and label
@@ -370,7 +308,7 @@ def plot_roc_curve_per_class(y_true, y_probs, num_classes,fold):
     full_plot_path = os.path.join(save_dir, plot_name)
     plt.savefig(full_plot_path)
     plt.close()
-
+# computes the classification metrics for each age and sex subset of the dataset
 def compute_metrics_with_indices(indices, labels_test, preds_test,task_probs_test,subset_name):
     if subset_name =='General':
         task_labels_test = labels_test
@@ -432,9 +370,8 @@ def load_model(model_name, nr_classes):
     else:
         raise ValueError("Invalid model name")
     return model
-
+# saves the best model for each fold
 def save_model_with_info(model, model_name, analysis,fold):
-    
     epochs=args.epochs
     plot_name = f'model_{model_name}_{analysis}_{epochs}_{fold}.pth'
     current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -443,7 +380,7 @@ def save_model_with_info(model, model_name, analysis,fold):
     full_plot_path = os.path.join(save_dir, plot_name)
     torch.save(model.state_dict(), full_plot_path)
     return full_plot_path
-
+# loads a model to apply it to a dataset
 def load_model_with_info(filepath, channel, height, width):
     checkpoint = torch.load(filepath)
     model = DenseNet121(channels=channel,height=height,width=width, nr_classes=num_classes) 
@@ -731,6 +668,7 @@ def train_and_evaluate(model, train_loader, val_loader,test_loader, weights, opt
         f"Precision: {precision:.4f}, "
         f"Recall: {recall:.4f}, "
         f"BA:{BA:.4f}")
+        
     #confusion matrix
     conf_matrix = confusion_matrix(y_true=y_test, y_pred=y_pred_test)
     mean_confusion_matrix+= conf_matrix
@@ -743,6 +681,7 @@ def train_and_evaluate(model, train_loader, val_loader,test_loader, weights, opt
     print("Classification Report:")
     print(class_report)
     return metrics_per_subset,mean_confusion_matrix
+    
 def unflatten_dict(d, sep='_'):
     unflattened_dict = {}
     for k, v in d.items():
@@ -752,6 +691,7 @@ def unflatten_dict(d, sep='_'):
             current = current.setdefault(key, {})
         current[keys[-1]] = v
     return unflattened_dict
+# apply holm bonferroni correction for the amount of tests done
 def holm_bonferroni(p_values, alpha=0.05):
     m = len(p_values)
     sorted_indices = sorted(range(m), key=lambda i: p_values[i])
@@ -765,6 +705,7 @@ def holm_bonferroni(p_values, alpha=0.05):
             corrected_p_values[sorted_indices[i]] = np.nan
     
     return corrected_p_values
+    
 def flatten_dict(d, parent_key='', sep='_'):
     items = []
     for k, v in d.items():
