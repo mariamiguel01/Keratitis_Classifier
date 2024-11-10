@@ -61,7 +61,7 @@ class MultitaskDenseNet121(torch.nn.Module):
         self.AvgPool2d= nn.AvgPool2d(kernel_size=(3, 3), stride=(2, 2), padding=1)
         self.batch_norm = nn.BatchNorm2d(self.densenet121[-1].num_features)
         self.dropout = nn.Dropout(p=0.3)
-       
+    
         # FC-Layers
         # Compute in_features
         _in_features = torch.rand(1, self.channels, self.height, self.width)
@@ -267,7 +267,7 @@ class CorneaUnifespDataset(Dataset):
         #self.eyes=eyes
         self.transform = transform"""
         image_fnames, y_train_,y_age,y_sex= self.load_and_preprocess_data(
-           X , y, y_age, y_sex
+        X , y, y_age, y_sex
         )
 
         images = image_fnames.copy()
@@ -318,7 +318,7 @@ class CorneaUnifespDataset(Dataset):
         y_age=y_age.values
         y_sex=y_sex.values
         y_train_ = y.values
-       
+    
         return train_image_fnames, y_train_,y_age, y_sex
     # Method: __len__
     def __len__(self):
@@ -347,7 +347,7 @@ class CorneaUnifespDataset(Dataset):
             
         if self.transform:
             image_tensor = self.transform(image_pil)
-  
+
         return image_tensor, torch.tensor(label, dtype=torch.long),torch.tensor(age, dtype=torch.long),torch.tensor(sex, dtype=torch.long)
 
 # Function: plot_roc_curve_per_class
@@ -621,7 +621,7 @@ def train_and_evaluate(model, train_loader, val_loader,test_loader, weights, opt
     age_labels_test = []
     reverse_transform = transforms.Compose([
     transforms.Normalize(mean=[-0.485 / 0.229, -0.456 / 0.224, -0.406 / 0.225],  # Undo normalization
-                         std=[1 / 0.229, 1 / 0.224, 1 / 0.225]),
+                        std=[1 / 0.229, 1 / 0.224, 1 / 0.225]),
     ])
     with torch.no_grad():
         for images, labels,age,sex in tqdm(test_loader, desc=f"Testing"):
@@ -727,12 +727,12 @@ def train_and_evaluate(model, train_loader, val_loader,test_loader, weights, opt
         BA_test = balanced_accuracy_score(task_labels_test,task_preds_test)
         
         print(f"Task {names[task_idx]} - Test Metrics: "
-              f"Accuracy: {accuracy_test:.4f}, "
-              f"AUC: {auc_test:.4f}, "
-              f"F1-Score: {f1_test:.4f}, "
-              f"Precision: {precision_test:.4f}, "
-              f"Recall: {recall_test:.4f}, "
-              f"BA: {BA_test:.4f}" )
+            f"Accuracy: {accuracy_test:.4f}, "
+            f"AUC: {auc_test:.4f}, "
+            f"F1-Score: {f1_test:.4f}, "
+            f"Precision: {precision_test:.4f}, "
+            f"Recall: {recall_test:.4f}, "
+            f"BA: {BA_test:.4f}" )
         
         subset_indices_list = [all_index,female_sex_index, male_sex_index, bin_0_18_index, bin_18_40_index, bin_40_65_index, mais_65_index]
         subset_names = ['General','Female Sex', 'Male Sex', '0-18 yo', '18-40 yo', '40-65 yo', '+65 yo']
@@ -886,7 +886,7 @@ if __name__ == "__main__":
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 ])
     dataset = CorneaUnifespDataset(transform=transform)
- 
+
     # Hyperparameters and training settings
     num_tasks = args.num_tasks
     epochs = args.epochs
@@ -1028,7 +1028,7 @@ if __name__ == "__main__":
                 folds = folds_dict.keys()
                 # Calculate mean and standard deviation across all folds
                 values = [value for value in folds_dict.values() if isinstance(value, (int, float))]
-               
+            
                 mean_all_folds = np.mean(values)
                 std_dev_all_folds = np.std(values)
                 
@@ -1115,7 +1115,7 @@ if __name__ == "__main__":
         file_path = os.path.join(folder_path, file_name)
         with open(file_path, 'wb') as f:
             pickle.dump(data, f)
-   
+
     #save folds
     current_dir = os.path.dirname(os.path.abspath(__file__))
     save_dir = os.path.join(current_dir,'Results_10folds','multitask_v1')

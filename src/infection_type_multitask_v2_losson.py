@@ -7,10 +7,12 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from PIL import Image
 from captum.attr import Saliency
+from sklearn.feature_extraction import img_to_graph
 from tqdm import tqdm
 import matplotlib
 import csv
 import pickle
+import re
 from datetime import datetime
 matplotlib.use('Agg')
 
@@ -18,17 +20,19 @@ matplotlib.use('Agg')
 # PyTorch Imports
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, Dataset, SubsetRandomSampler, Subset
+from torch.utils.data import DataLoader, Dataset,SubsetRandomSampler,Subset
 import torchvision
-import torchvision.transforms as transforms 
-from torchvision.transforms import v2
+import torchvision.transforms as transforms
 import torchvision.transforms.functional as TF
 from torch.autograd import Variable
+from torchvision import datasets
+from torch.utils.data import DataLoader, TensorDataset, WeightedRandomSampler
 
 
 
 # Sklearn Imports
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import StratifiedKFold, train_test_split
+
 from skmultilearn.model_selection import iterative_train_test_split
 from skmultilearn.model_selection import IterativeStratification
 from sklearn.utils.class_weight import compute_class_weight
@@ -48,14 +52,17 @@ import scipy.stats as st
 class MultitaskDenseNet121(torch.nn.Module):
     def __init__(self, channels, height, width, num_tasks):
         super(MultitaskDenseNet121, self).__init__()
+        
         # Init variables
         self.channels = channels
         self.height = height
         self.width = width
         self.num_tasks = num_tasks
+
         # Init modules
         # Backbone to extract features
         self.densenet121 = torchvision.models.densenet121(pretrained=True).features
+        #self.dropout = nn.Dropout(p=0.3)
         #dropout and other layers
         self.AvgPool2d= nn.AvgPool2d(kernel_size=(3, 3), stride=(2, 2), padding=1)
         self.batch_norm = nn.BatchNorm2d(self.densenet121[-1].num_features)
@@ -67,73 +74,27 @@ class MultitaskDenseNet121(torch.nn.Module):
         _in_features = self.AvgPool2d(_in_features)
         _in_features = _in_features.size(1) * _in_features.size(2) * _in_features.size(3)
         
-        self.fc_layers = torch.nn.ModuleList()
-        for task in range(num_tasks):
-            fc_layer = torch.nn.Linear(in_features=_in_features, out_features=1) 
-            self.fc_layers.append(fc_layer)
-        return
-    
+        self.fc1 = torch.nn.Linear(in_features=_in_features, out_features=3) 
     def freezelayers(self):
         for param in self.densenet121.parameters():
             param.requires_grad = False
     def unfreeze_all_layers(self):
         for param in self.densenet121.parameters():
             param.requires_grad = True
-  
-    
+    # Method: forward
     def forward(self, inputs):
+        # Compute Backbone features
         features = self.densenet121(inputs)
         features = self.AvgPool2d(features)
         features = self.batch_norm(features)
         features= self.dropout(features)
+        # Reshape features
         features = features.view(features.size(0), -1)
         outputs = []
-        for fc_layer in self.fc_layers:
-            output = fc_layer(features)
-            outputs.append(output)
-        outputs = torch.cat(outputs, dim=1)
+        # Step 4: Classification Layers
+        outputs = self.fc1(features)
         return outputs
     
-class MultitaskVGG16(torch.nn.Module):
-    def __init__(self, channels, height, width, num_tasks):
-        super(MultitaskVGG16, self).__init__()
-
-        # Init variables
-        self.channels = channels
-        self.height = height
-        self.width = width
-        self.num_tasks = num_tasks
-
-        # Init modules
-        # Backbone to extract features
-        self.vgg16 = torchvision.models.vgg16(pretrained=True).features
-
-        # FC-Layers
-        # Compute in_features
-        _in_features = torch.rand(1, self.channels, self.height, self.width)
-        _in_features = self.vgg16(_in_features)
-        _in_features = _in_features.size(0) * _in_features.size(1) * _in_features.size(2) * _in_features.size(3)
-
-        self.fc_layers = torch.nn.ModuleList()
-        for task in range(num_tasks):
-            fc_layer = torch.nn.Linear(in_features=_in_features, out_features=1) 
-            self.fc_layers.append(fc_layer)
-        return
-    
-    # Method: forward
-    def forward(self, inputs):
-
-        # Compute Backbone features
-        features = self.vgg16(inputs)
-
-        # Reshape features
-        features = torch.reshape(features, (features.size(0), -1))
-        outputs = []
-        for fc_layer in self.fc_layers:
-            output = fc_layer(features)
-            outputs.append(output)
-        outputs = torch.cat(outputs, dim=1)
-        return outputs
 
 def aggregate_classifications(group):
     classification_columns = ['Cultura para FUNGOS Res', 'Cultura para ACANTHAMOEBA Res', 'Cultura para BACTÉRIA Res']
@@ -142,7 +103,32 @@ def aggregate_classifications(group):
             group[col] = 'Positiva'
         else:
             group[col] = 'Negativa'
-    return group.iloc[0]    
+    return group.iloc[0]
+def get_test_indices(csv_path, fold_number):
+    X_test = []
+
+    with open(csv_path, 'r', newline='') as csvfile:
+        reader = csv.DictReader(csvfile)
+
+        for row in reader:
+            fold = int(row['fold'])# Assuming 'fold' is a column header in the CSV
+            if fold == fold_number:
+                print(fold)
+                test_fnames_str = row['test_fnames']
+                print(test_fnames_str)
+                # Extract filenames using regex to find strings within []
+                filenames = re.findall(r'\[\'(.*?)\'\]', test_fnames_str)
+                
+                # Add brackets around each filename
+                formatted_filenames = [[fname] for fname in filenames]
+                
+                X_test.extend(formatted_filenames)
+    
+    X_test = np.array(X_test)
+
+    return X_test
+    
+    return None 
 # Class: CorneaUnifespDataset
 class CorneaUnifespDataset(Dataset):
 
@@ -150,8 +136,8 @@ class CorneaUnifespDataset(Dataset):
     def __init__(
             self, 
             csv_file_path='/nas-ctm01/datasets/private/MEDICAL/UNIFESP/cornea-unifesp-db/data/metadata_proc_flipped.csv', 
-            image_directory='/nas-ctm01/datasets/private/MEDICAL/UNIFESP/cornea-unifesp-db/data/images-resized',
             image_directory_flipped='/nas-ctm01/datasets/private/MEDICAL/UNIFESP/cornea-unifesp-db/data/images-resized-flipped',
+            image_directory='/nas-ctm01/datasets/private/MEDICAL/UNIFESP/cornea-unifesp-db/data/images-resized', 
             #train_size=0.8,
             #val_size=0.1,
             #test_size=0.1,
@@ -162,7 +148,6 @@ class CorneaUnifespDataset(Dataset):
         
         #assert int(train_size+val_size+test_size) == 1
         #assert split in ('train', 'validation', 'test')
-
         # Assign class variables
         self.csv_file_path = csv_file_path
         self.image_directory = image_directory
@@ -176,11 +161,9 @@ class CorneaUnifespDataset(Dataset):
         filtered_patients_info['coleta'] = filtered_patients_info[['Cultura para FUNGOS Res', 'Cultura para ACANTHAMOEBA Res', 'Cultura para BACTÉRIA Res']].apply(
             lambda row: 1 if any(val == 'Positiva' for val in row) else 0, axis=1
         )
+        classification_columns = ['Cultura para FUNGOS Res', 'Cultura para ACANTHAMOEBA Res', 'Cultura para BACTÉRIA Res']
         filtered_patients_info_coleta = filtered_patients_info[filtered_patients_info['coleta'] == 1]
         filtered_patients_info_coleta = filtered_patients_info_coleta.groupby('file_names').apply(aggregate_classifications).reset_index(drop=True)
-        #filtered_patients_info_coleta = filtered_patients_info_coleta.groupby('file_names').first().reset_index()
-        #filtered_patients_info_coleta = filtered_patients_info_coleta.groupby('file_names').apply(lambda x: x.iloc[0]).reset_index(drop=True)
-        
         filtered_patients_info_coleta.loc[:, 'Cultura para FUNGOS Res'] = np.where(filtered_patients_info_coleta['Cultura para FUNGOS Res'] == 'Positiva', 1, 0)
         filtered_patients_info_coleta.loc[:, 'Cultura para BACTÉRIA Res'] = np.where(filtered_patients_info_coleta['Cultura para BACTÉRIA Res'] == 'Positiva', 1, 0)
         filtered_patients_info_coleta.loc[:, 'Cultura para ACANTHAMOEBA Res'] = np.where(filtered_patients_info_coleta['Cultura para ACANTHAMOEBA Res'] == 'Positiva', 1, 0)
@@ -198,30 +181,33 @@ class CorneaUnifespDataset(Dataset):
         filtered_patients_info_coleta['idade'] = pd.cut(filtered_patients_info_coleta['Idade'], bins=bins, labels=labels, right=False)
         filtered_patients_info_coleta['idade'] = filtered_patients_info_coleta['idade'].astype(int)
         y_age = filtered_patients_info_coleta['idade']
+
         """
+        
         # Split into train+val and test
-        X_train_val, X_test, y_train_val, y_test = train_test_split(
+        X_train_val,  y_train_val, X_test, y_test = iterative_train_test_split(
             X, 
             y, 
-            test_size=self.test_size, 
-            random_state=self.seed, 
-            stratify=y
-        )
-
+            test_size=self.test_size)
+        
         # Split into train and val
-        X_train, X_val, y_train, y_val = train_test_split(
+        X_train, y_train, X_val, y_val = iterative_train_test_split(
             X_train_val, 
             y_train_val, 
-            train_size=(self.train_size/(self.train_size+self.val_size)), 
-            random_state=42,
-            stratify=y_train_val
+            test_size=(self.val_size/(self.train_size+self.val_size))
         )
 
         # print(len(X_train)/len(X), self.train_size)
         # print(len(X_val)/len(X), self.val_size)
         # print(len(X_test)/len(X), self.test_size) 
 
-        # Prepare dataset
+        X_train = pd.DataFrame(X_train, columns=column_names_x)
+        y_train = pd.DataFrame(y_train, columns=column_names_y)
+        X_val = pd.DataFrame(X_val, columns=column_names_x)
+        y_val = pd.DataFrame(y_val, columns=column_names_y)
+        X_test = pd.DataFrame(X_test, columns=column_names_x)
+        y_test = pd.DataFrame(y_test, columns=column_names_y)
+        
         train_image_fnames, val_image_fnames, test_image_fnames, y_train_, y_val_, y_test_ = self.load_and_preprocess_data(
             X_train,
             X_val,
@@ -251,7 +237,7 @@ class CorneaUnifespDataset(Dataset):
         #self.eyes=eyes
         self.transform = transform"""
         image_fnames, y_train_,y_age,y_sex= self.load_and_preprocess_data(
-           X , y, y_age, y_sex
+        X , y, y_age, y_sex
         )
 
         images = image_fnames.copy()
@@ -273,8 +259,8 @@ class CorneaUnifespDataset(Dataset):
         image_filenames_flipped = set(os.listdir(image_flipped_folder_path))
         patients_info = patients_info[patients_info['file_names'].isin(image_filenames)| patients_info['file_names'].isin(image_filenames_flipped)]
         return patients_info
-
     """
+
     # Method: load_and_preprocess_data
     def load_and_preprocess_data(self, X_train, X_val, X_test, y_train, y_val, y_test):
     
@@ -302,7 +288,7 @@ class CorneaUnifespDataset(Dataset):
         y_age=y_age.values
         y_sex=y_sex.values
         y_train_ = y.values
-       
+    
         return train_image_fnames, y_train_,y_age, y_sex
     # Method: __len__
     def __len__(self):
@@ -317,6 +303,7 @@ class CorneaUnifespDataset(Dataset):
         label = self.labels[idx]
         age=self.age[idx]
         sex=self.sex[idx]
+
         # Load image
         image_fpath_original = os.path.join(self.image_directory, image_fname)
         image_fpath_flipped = os.path.join(self.image_directory_flipped, image_fname)
@@ -324,26 +311,30 @@ class CorneaUnifespDataset(Dataset):
             image_fpath = image_fpath_original
         elif os.path.isfile(image_fpath_flipped):
             image_fpath = image_fpath_flipped
-        image_pil = Image.open(image_fpath).convert('RGB')     
+        image_pil = Image.open(image_fpath).convert('RGB')   
         #olho = self.eyes[idx]
         #if olho == 'OE':  # Assuming 'OE' indicates the need to flip
             #image_pil = image_pil.transpose(Image.FLIP_LEFT_RIGHT)
-            
         if self.transform:
             image_tensor = self.transform(image_pil)
-  
+
         return image_tensor, torch.tensor(label, dtype=torch.long),torch.tensor(age, dtype=torch.long),torch.tensor(sex, dtype=torch.long)
 
 # Function: plot_roc_curve_per_class
 def plot_roc_curve_per_task(all_labels_test, all_probs_test, num_tasks,fold):
+    thresholdsss = [0] * num_tasks
     plt.figure(figsize=(8, 6))
     for task_idx in range(num_tasks):
-        task_labels = np.array(all_labels_test[task_idx])
-        task_probs = np.array(all_probs_test[task_idx])
-        fpr, tpr, _ = roc_curve(task_labels, task_probs)
+        task_labels = np.array(all_labels_test[:, task_idx])
+        task_probs = np.array(all_probs_test[:, task_idx])
+        fpr, tpr, thresholds = roc_curve(task_labels, task_probs)
+        j_scores = tpr - fpr
+        optimal_idx = np.argmax(j_scores)
+        optimal_threshold = thresholds[optimal_idx]
+        thresholdsss[task_idx]=optimal_threshold
         roc_auc = auc(fpr, tpr)
         plt.plot(fpr, tpr, lw=2, label=f'Task = {names[task_idx]} (AUC = {roc_auc:.2f})')
-
+        
     # Plot settings
     plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
     plt.xlim([0.0, 1.0])
@@ -356,12 +347,13 @@ def plot_roc_curve_per_task(all_labels_test, all_probs_test, num_tasks,fold):
 
     # Save the plot
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    save_dir = os.path.join(current_dir,'Results_10folds','multitask_v1', f'{fold}')
+    save_dir = os.path.join(current_dir,'Results_10folds','multitask_v2', f'{fold}')
     plot_name = f'ROC_curve_{model_name}_{analysis}_{epochs}.png'
     os.makedirs(save_dir, exist_ok=True)
     full_plot_path = os.path.join(save_dir, plot_name)
     plt.savefig(full_plot_path)
     plt.close()
+    return thresholdsss
     
 def compute_metrics_with_indices(indices, labels_test, preds_test,task_probs_test,subset_name):
     if subset_name =='General':
@@ -381,13 +373,12 @@ def compute_metrics_with_indices(indices, labels_test, preds_test,task_probs_tes
     precision_test = precision_score(task_labels_test, task_preds_test)
     recall_test = recall_score(task_labels_test, task_preds_test)
     f1_test = f1_score(task_labels_test, task_preds_test)
-    BA_test = balanced_accuracy_score(task_labels_test,task_preds_test)
+    ba_test = balanced_accuracy_score(task_labels_test,task_preds_test)
     
-    return accuracy_test,auc_test,precision_test,recall_test, f1_test, BA_test
-        
+    return accuracy_test,auc_test,precision_test,recall_test, f1_test, ba_test
+            
 # Function: Load model
 def load_model(model_name, nr_classes):
-    print(model_name)
     if model_name == 'densenet121':
         model = MultitaskDenseNet121(
             channels=3, 
@@ -395,13 +386,6 @@ def load_model(model_name, nr_classes):
             width=224, 
             num_tasks=num_tasks
         )
-        """elif model_name == 'vgg16':
-        model = MultitaskVGG16(
-            channels=3, 
-            height=224, 
-            width=224, 
-            num_tasks=num_tasks
-        )"""
     else:
         raise ValueError("Invalid model name")
     return model
@@ -411,7 +395,7 @@ def save_model_with_info(model, model_name, analysis,fold):
     epochs=args.epochs
     plot_name = f'model_{model_name}_{analysis}_{epochs}_multitask.pth'
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    save_dir = os.path.join(current_dir,'Results_10folds','multitask_v1', f'{fold}')
+    save_dir = os.path.join(current_dir,'Results_10folds','multitask_v2', f'{fold}')
     os.makedirs(save_dir, exist_ok=True)
     full_plot_path = os.path.join(save_dir, plot_name)
     torch.save(model.state_dict(), full_plot_path)
@@ -424,43 +408,35 @@ def load_model_with_info(filepath, channel, height, width, num_tasks):
     return model
 
 # Function: Train and Evaluate
-def train_and_evaluate(model, train_loader, val_loader,test_loader, weights, optimizer, epochs, num_tasks, model_name, analysis,fold,metrics_per_subset,mean_confusion_matrix_bact,mean_confusion_matrix_fung,mean_confusion_matrix_ameb):
+def train_and_evaluate(model, train_loader, val_loader,test_loader, weights, optimizer, epochs, num_tasks, model_name, analysis,names,fold,metrics_per_subset,mean_confusion_matrix_bact,mean_confusion_matrix_fung,mean_confusion_matrix_ameb):
     
     # Get device
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-    #print(f"Device: {device}")
+    print(f"Device: {device}")
 
     # Move model (and other stuff) into device
-    model.to(device)
-
-    #Normalize weights
-    
+    model.to(device)    
     weights=torch.tensor(weights, dtype=torch.float64)
     weights.to(device)
-    cost_weights=[0.021,0.434,0.545]# 90reaisbact+1827fungi+2292ameba
-    cost_weights=torch.tensor(cost_weights, dtype=torch.float64)
 
     # Create lists to track losses
     train_losses = []
     val_losses = []
     best_val_loss= float('inf')
-
-    # Go through the number of epochs
-    # Freeze model
+    cost_weights=[0.021,0.434,0.545]# 90reaisbact+1827fungi+2292ameba
+    cost_weights=torch.tensor(cost_weights, dtype=torch.float64)
+# Go through the number of epochs
+    """
     model.freezelayers()
     freeze = True
     for epoch in range(epochs):
-
-        # TODO: Check this
         if freeze == True:
             if epoch+1 >= 10:
                 model.unfreeze_all_layers()
                 freeze = False
-        
-        # model.current_epoch = epoch  # Set current epoch
         model.train()
         epoch_train_losses = []
-        print("epoch",epoch+1)
+        print("epoch",epoch)
 
         for images, labels,age,sex in train_loader:
             
@@ -473,23 +449,18 @@ def train_and_evaluate(model, train_loader, val_loader,test_loader, weights, opt
             # Get logits
             outputs = model(images)
             outputs = outputs.float()
+            
+            #criterion
+            criterion = nn.BCEWithLogitsLoss(reduction='none').to(device)
+            loss = criterion(outputs,labels).to(device)
+            lossone = (loss *  weights.to(loss.device)).mean()
+            losstwo=(loss *  cost_weights.to(loss.device)).mean()
+            overall_loss= 0.8*lossone + 0.2*losstwo
 
-            loss=0
-            for task_idx in range(num_tasks):
-                criterion = nn.BCEWithLogitsLoss(reduction='none')
-                criterion.to(device)
-                task_loss = criterion(outputs[:, task_idx], labels[:, task_idx])
-                task_loss.to(device)
-                lossone = (task_loss *  weights[task_idx]).mean()
-                #losstwo= (task_loss *  cost_weights[task_idx]).mean()
-                #overall_loss= 0.8*lossone + 0.2*losstwo
-                overall_loss= lossone
-                loss += overall_loss
-            loss=loss/3
             # Backpropagate the error
-            loss.backward()
+            overall_loss.backward()
             optimizer.step()
-            epoch_train_losses.append(loss.item())
+            epoch_train_losses.append(overall_loss.item())
         train_losses.append(sum(epoch_train_losses) / len(epoch_train_losses))
         print("Train loss: ", sum(epoch_train_losses) / len(epoch_train_losses))
         elapsed_time = datetime.now() - start_time
@@ -497,8 +468,8 @@ def train_and_evaluate(model, train_loader, val_loader,test_loader, weights, opt
     
         # Validation loop
         model.eval()
-        all_labels = [[] for _ in range(num_tasks)]
-        all_probs = [[] for _ in range(num_tasks)]
+        all_labels = []
+        all_probs = []
         epoch_val_losses = []
 
         with torch.no_grad():
@@ -510,38 +481,37 @@ def train_and_evaluate(model, train_loader, val_loader,test_loader, weights, opt
                 # Get logits
                 outputs = model(images)
                 outputs = outputs.float()
-                loss=0
-                for task_idx in range(num_tasks):
-                    criterion =nn.BCEWithLogitsLoss(reduction='none')
-                    criterion.to(device)
-                    task_loss = criterion(outputs[:, task_idx],labels[:, task_idx])
-                    task_loss.to(device)
-                    lossone = (task_loss *  weights[task_idx]).mean()
-                    #losstwo= (task_loss *  cost_weights[task_idx]).mean()
-                    #overall_loss= 0.8*lossone + 0.2*losstwo
-                    overall_loss= lossone
-                    loss += overall_loss
-                    probs = torch.nn.functional.sigmoid(outputs[:, task_idx])
-                    all_labels[task_idx].extend(labels.cpu().numpy()[:, task_idx])
-                    all_probs[task_idx].extend(probs.cpu().numpy()) 
-                loss=loss/3
-                epoch_val_losses.append(loss.item())
+                
+                #criterion
+                criterion = nn.BCEWithLogitsLoss(reduction='none')
+                criterion.to(device)
+                
+                loss = criterion(outputs,labels).to(device)
+                lossone = (loss *  weights.to(loss.device)).mean()
+                losstwo=(loss *  cost_weights.to(loss.device)).mean()
+                overall_loss= 0.8*lossone + 0.2*losstwo
+                probs = torch.nn.functional.sigmoid(outputs)
+                all_labels.extend(labels.cpu().numpy().tolist())
+                all_probs.extend(probs.cpu().numpy().tolist())   
+                epoch_val_losses.append(overall_loss.item())
         val_losses.append(sum(epoch_val_losses) / len(epoch_val_losses))
         print("Validation loss: ", sum(epoch_val_losses) / len(epoch_val_losses))
         val_loss=sum(epoch_val_losses) / len(epoch_val_losses)
-
         recall_vals = []
+        all_labels=np.array(all_labels)
+        all_probs=np.array(all_probs)
+    
         # Convert lists into NumPy arrays and calculate metrics
         for task_idx in range(num_tasks):
-            task_labels = np.array(all_labels[task_idx])
-            task_probs = np.array(all_probs[task_idx])
-            all_probs[task_idx] = np.array(all_probs[task_idx])
+            task_labels = all_labels[:, task_idx]
+            task_probs = all_probs[:, task_idx]
             if(task_idx==0):
-                task_preds = np.where(all_probs[task_idx] >= 0.5, 1, 0)  # Apply threshold of 0.5 for binary classification
+                task_preds = np.where(all_probs[:,task_idx] >= 0.5, 1, 0)  # Apply threshold of 0.5 for binary classification
             if(task_idx==1):
-                task_preds = np.where(all_probs[task_idx] >= 0.5, 1, 0)
+                task_preds = np.where(all_probs[:,task_idx] >= 0.5, 1, 0)
             if(task_idx==2):
-                task_preds = np.where(all_probs[task_idx] >= 0.5, 1, 0)
+                task_preds = np.where(all_probs[:,task_idx] >= 0.5, 1, 0)
+                
             accuracy_val = accuracy_score(task_labels, task_preds)
             auc_val = roc_auc_score(task_labels, task_probs)
             precision_val = precision_score(task_labels, task_preds)
@@ -557,6 +527,7 @@ def train_and_evaluate(model, train_loader, val_loader,test_loader, weights, opt
             f"Recall: {recall_val:.4f}, "
             f"BA:{balanced_accuracy_val:.4f}"
             )
+
         avg_loss = val_loss
         # Save best model
         if avg_loss < best_val_loss:
@@ -574,39 +545,42 @@ def train_and_evaluate(model, train_loader, val_loader,test_loader, weights, opt
     plt.legend()
     plot_name=f'loss_evolution_{model_name}_{analysis}_{epochs}.png'
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    save_dir = os.path.join(current_dir,'Results_10folds','multitask_v1', f'{fold}')
+    save_dir = os.path.join(current_dir,'Results_10folds','multitask_v2', f'{fold}')
     os.makedirs(save_dir, exist_ok=True)
     full_plot_path = os.path.join(save_dir, plot_name)
     plt.savefig(full_plot_path)
-    plt.close()
-    
+    plt.close()"""
     all_positive_indices = [[] for _ in range(num_tasks)]
     all_negative_indices = [[] for _ in range(num_tasks)]
     all_positive_images = [[] for _ in range(num_tasks)]
     all_negative_images = [[] for _ in range(num_tasks)]
     elapsed_time = datetime.now() - start_time
     print(f"Val Time", elapsed_time)
+    plot_name = f'model_{model_name}_{analysis}_{epochs}_multitask.pth'
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    save_dir = os.path.join(current_dir,'Results_10folds','multitask_v2', f'{fold}')
+    full_plot_path = os.path.join(save_dir, plot_name)
+    best_model_path=full_plot_path
     best_model = load_model_with_info(best_model_path, 3, 224, 224, num_tasks)
     best_model.to(device)    
     # Test loop
     best_model.eval()
-    all_labels_test = [[] for _ in range(num_tasks)]
-    all_probs_test = [[] for _ in range(num_tasks)]
-    all_preds_test = [[] for _ in range(num_tasks)]
-    saliency = Saliency(best_model)
-    num_instances_to_plot = 1
+    all_labels_test = []
+    all_probs_test = []
     sex_labels_test = []
     age_labels_test = []
+
+    saliency = Saliency(best_model)
+    num_instances_to_plot = 1
     reverse_transform = transforms.Compose([
     transforms.Normalize(mean=[-0.485 / 0.229, -0.456 / 0.224, -0.406 / 0.225],  # Undo normalization
-                         std=[1 / 0.229, 1 / 0.224, 1 / 0.225]),
+                        std=[1 / 0.229, 1 / 0.224, 1 / 0.225]),
     ])
+    
     with torch.no_grad():
         for images, labels,age,sex in tqdm(test_loader, desc=f"Testing"):
             images, labels = images.to(device), labels.to(device)
             labels=labels.float()
-
-
             # Get logits
             outputs = best_model(images)
             images = reverse_transform(images)
@@ -614,65 +588,79 @@ def train_and_evaluate(model, train_loader, val_loader,test_loader, weights, opt
             outputs = outputs.float() 
             sex_labels_test.extend(sex.cpu().numpy())
             age_labels_test.extend(age.cpu().numpy())
-            for task_idx in range(num_tasks):
-                probs = torch.nn.functional.sigmoid(outputs[:, task_idx])
-                all_labels_test[task_idx].extend(labels.cpu().numpy()[:, task_idx])
-                all_probs_test[task_idx].extend(probs.cpu().numpy()) 
-                positive_indices = (labels[:, task_idx] == 1).nonzero().squeeze(1)
-                negative_indices = (labels[:, task_idx] == 0).nonzero().squeeze(1)
-                # Append positive and negative indices and corresponding images to arrays
+            probs = torch.nn.functional.sigmoid(outputs)
+            all_labels_test.extend(labels.cpu().numpy())
+            all_probs_test.extend(probs.cpu().numpy())
+            for task_idx in range(num_tasks): 
+                positive_indices = (labels[:, task_idx] == 1.).nonzero().squeeze(1)
+                negative_indices = (labels[:, task_idx] == 0.).nonzero().squeeze(1)
                 all_positive_indices[task_idx].append(positive_indices.cpu().numpy())
                 all_negative_indices[task_idx].append(negative_indices.cpu().numpy())
                 all_positive_images[task_idx].append(images[positive_indices])
                 all_negative_images[task_idx].append(images[negative_indices])
                 
-                
-    for task_idx in range(num_tasks):
+    
+            
+
+
+
+    for task_idx in range(num_tasks): 
         fig, axs = plt.subplots(2, 2, figsize=(10, 20))
         fig.suptitle(f'Task {names[task_idx]}', fontsize=16)
-        if len(all_positive_images[task_idx]) > 0 and all_positive_images[task_idx][0].shape !=(0,3,224,224):
-            
-            selected_pos_img= all_positive_images[task_idx][0].cpu().detach().numpy()
-            selected_pos_img=selected_pos_img[0].transpose((1, 2, 0))
+        
+        if task_idx < len(all_positive_images) and len(all_positive_images[task_idx]) > 0 and all_positive_images[task_idx][0].shape!=(0,3,224,224):
+            selected_pos_img = all_positive_images[task_idx][0].cpu().detach().numpy()
+            selected_pos_img = selected_pos_img[0].transpose((1, 2, 0))
             selected_pos_img_sal = selected_pos_img.transpose((2, 0, 1))
             selected_pos_img_sal = np.expand_dims(selected_pos_img_sal, axis=0)
-            selected_pos_img=np.array(selected_pos_img)
+            selected_pos_img = np.array(selected_pos_img)
             axs[0, 0].imshow(selected_pos_img)
             axs[0, 0].set_title(f'Positive Instance')
             axs[0, 0].axis('off')
 
             selected_pos_img_sal = torch.tensor(selected_pos_img_sal).to(device)
-            pos_saliency_map = saliency.attribute(selected_pos_img_sal,target=task_idx)
-            pos_saliency_map= pos_saliency_map.cpu().detach().numpy().squeeze(0).transpose((1, 2, 0))
+            pos_saliency_map = saliency.attribute(selected_pos_img_sal, target=task_idx)
+            pos_saliency_map = pos_saliency_map.cpu().detach().numpy().squeeze(0).transpose((1, 2, 0))
             axs[0, 1].imshow(pos_saliency_map)
             axs[0, 1].axis('off')
+        else:
+            axs[0, 0].axis('off')
+            axs[0, 1].axis('off')
 
-        if  len(all_negative_images[task_idx]) > 0 and all_negative_images[task_idx][0].shape !=(0,3,224,224):
-            # Plot original image
-            selected_neg_img= all_negative_images[task_idx][0].cpu().detach().numpy()
-            selected_neg_img=selected_neg_img[0].transpose((1, 2, 0))
+        if task_idx < len(all_negative_images) and len(all_negative_images[task_idx]) > 0 and all_negative_images[task_idx][0].shape!=(0,3,224,224):
+            selected_neg_img = all_negative_images[task_idx][0].cpu().detach().numpy()
+            selected_neg_img = selected_neg_img[0].transpose((1, 2, 0))
             selected_neg_img_sal = selected_neg_img.transpose((2, 0, 1))
             selected_neg_img_sal = np.expand_dims(selected_neg_img_sal, axis=0)
-            selected_neg_img=np.array(selected_neg_img)
+            selected_neg_img = np.array(selected_neg_img)
             axs[1, 0].imshow(selected_neg_img)
             axs[1, 0].set_title(f'Negative Instance')
             axs[1, 0].axis('off')
 
-        
             selected_neg_img_sal = torch.tensor(selected_neg_img_sal).to(device)
-            neg_saliency_map = saliency.attribute(selected_neg_img_sal,target=task_idx)
-            neg_saliency_map= neg_saliency_map.cpu().detach().numpy().squeeze(0).transpose((1, 2, 0))
+            neg_saliency_map = saliency.attribute(selected_neg_img_sal, target=task_idx)
+            neg_saliency_map = neg_saliency_map.cpu().detach().numpy().squeeze(0).transpose((1, 2, 0))
             axs[1, 1].imshow(neg_saliency_map)
             axs[1, 1].axis('off')
+        else:
+            axs[1, 0].axis('off')
+            axs[1, 1].axis('off')
+
         plt.show()
-        plot_name=f'maps_{model_name}_{analysis}_{epochs}{task_idx}.png'
+        plot_name = f'maps_{model_name}_{analysis}_{epochs}{task_idx}.png'
         current_dir = os.path.dirname(os.path.abspath(__file__))
-        save_dir = os.path.join(current_dir,'Results_10folds','multitask_v1', f'{fold}')
+        save_dir = os.path.join(current_dir, 'Results_10folds', 'multitask_v2', f'{fold}')
         os.makedirs(save_dir, exist_ok=True)
         full_plot_path = os.path.join(save_dir, plot_name)
         plt.savefig(full_plot_path)
         plt.close()
-        
+    
+    
+    all_probs_test=np.array(all_probs_test)
+    all_labels_test=np.array(all_labels_test)
+    all_preds_test = np.zeros_like(all_probs_test)
+    thresholds=plot_roc_curve_per_task(all_labels_test, all_probs_test, num_tasks,fold) 
+
     sex_labels_test=np.array(sex_labels_test)
     age_labels_test=np.array(age_labels_test)
     all_index=np.where(sex_labels_test)[0]
@@ -682,45 +670,48 @@ def train_and_evaluate(model, train_loader, val_loader,test_loader, weights, opt
     bin_18_40_index=np.where(age_labels_test == 1)[0]
     bin_40_65_index=np.where(age_labels_test == 2)[0]
     mais_65_index=np.where(age_labels_test == 3)[0]
+    task_preds_test=[]
                 
-                            
     # Calculate metrics for the test set
     for task_idx in range(num_tasks):
-        task_labels_test = np.array(all_labels_test[task_idx])
-        task_probs_test = np.array(all_probs_test[task_idx])
-        all_probs_test[task_idx] = np.array(all_probs_test[task_idx])
+        task_labels_test = all_labels_test[:, task_idx]
+        task_probs_test = all_probs_test[:, task_idx]
         if(task_idx==0):
-                task_preds_test = np.where(all_probs_test[task_idx] >= 0.5, 1, 0)
+            task_preds_test = np.where(task_probs_test >= 0.5, 1, 0)
         if(task_idx==1):
-                task_preds_test =np.where(all_probs_test[task_idx] >= 0.5, 1, 0)
+            task_preds_test =np.where(task_probs_test >= 0.5, 1, 0)
         if(task_idx==2):
-                task_preds_test = np.where(all_probs_test[task_idx] >= 0.5, 1, 0)   
-        all_preds_test[task_idx]=task_preds_test
+            task_preds_test = np.where(task_probs_test >= 0.5, 1, 0) 
+        all_preds_test[:,task_idx]=task_preds_test
         accuracy_test = accuracy_score(task_labels_test, task_preds_test)
         auc_test = roc_auc_score(task_labels_test, task_probs_test)
+        print(auc_test,"auc")
         precision_test = precision_score(task_labels_test, task_preds_test)
         recall_test = recall_score(task_labels_test, task_preds_test)
         f1_test = f1_score(task_labels_test, task_preds_test)
-        BA_test = balanced_accuracy_score(task_labels_test,task_preds_test)
-        plot_roc_curve_per_task(all_labels_test, all_probs_test, num_tasks,fold)
-        print(f"Task {names[task_idx]} - Test Metrics: "
-              f"Accuracy: {accuracy_test:.4f}, "
-              f"AUC: {auc_test:.4f}, "
-              f"F1-Score: {f1_test:.4f}, "
-              f"Precision: {precision_test:.4f}, "
-              f"Recall: {recall_test:.4f}, "
-              f"BA: {BA_test:.4f}" )
+        ba_test = balanced_accuracy_score(task_labels_test,task_preds_test)
+        print(ba_test,"ba")
         
+        
+
+        print(f"Task {names[task_idx]} - Test Metrics: "
+            f"Accuracy: {accuracy_test:.4f}, "
+            f"AUC: {auc_test:.4f}, "
+            f"F1-Score: {f1_test:.4f}, "
+            f"Precision: {precision_test:.4f}, "
+            f"Recall: {recall_test:.4f}, "
+            f"BA: {ba_test:.4f}" )
+
         subset_indices_list = [all_index,female_sex_index, male_sex_index, bin_0_18_index, bin_18_40_index, bin_40_65_index, mais_65_index]
         subset_names = ['General','Female Sex', 'Male Sex', '0-18 yo', '18-40 yo', '40-65 yo', '+65 yo']
         tasks_list = ['Bacteria', 'Fungi', 'Ameba'] 
         metrics=['F1','Recall','Precision','BA','ACC','AUC']
         for subset_name, subset_indx in zip(subset_names, subset_indices_list):
-            accuracy, auc, precision, recall, f1, BA = compute_metrics_with_indices(subset_indx, task_labels_test, task_preds_test,task_probs_test,subset_name)
+            accuracy, auc, precision, recall, f1, ba = compute_metrics_with_indices(subset_indx, task_labels_test, task_preds_test,task_probs_test,subset_name)
             metrics_per_subset[subset_name]['F1'][tasks_list[task_idx]][fold]=f1
             metrics_per_subset[subset_name]['Recall'][tasks_list[task_idx]][fold]=recall
             metrics_per_subset[subset_name]['Precision'][tasks_list[task_idx]][fold]=precision
-            metrics_per_subset[subset_name]['BA'][tasks_list[task_idx]][fold]=BA
+            metrics_per_subset[subset_name]['BA'][tasks_list[task_idx]][fold]=ba
             metrics_per_subset[subset_name]['ACC'][tasks_list[task_idx]][fold]=accuracy
             metrics_per_subset[subset_name]['AUC'][tasks_list[task_idx]][fold]=auc
             print(f"Metrics for {subset_name} - Task {names[task_idx]}:")
@@ -730,8 +721,9 @@ def train_and_evaluate(model, train_loader, val_loader,test_loader, weights, opt
             f"F1-Score: {f1:.4f}, "
             f"Precision: {precision:.4f}, "
             f"Recall: {recall:.4f}, "
-            f"BA:{BA:.4f}")
-
+            f"BA:{ba:.4f}")
+                
+                
         # Confusion matrix
         print("Confusion Matrix:")
         cf=confusion_matrix(task_labels_test, task_preds_test)
@@ -742,22 +734,27 @@ def train_and_evaluate(model, train_loader, val_loader,test_loader, weights, opt
             mean_confusion_matrix_fung += cf
         if task_idx==2:
             mean_confusion_matrix_ameb += cf
+        
         # Classification report
         print("Classification Report:")
         print(classification_report(task_labels_test, task_preds_test))
         
-    class_labels = ['0-0-0', '1-0-0', '0-1-0', '0-0-1', '1-1-0', '0-1-1', '1-0-1','1-1-1']
-    labels_array = ['-'.join(str(int(float(x))) for x in arr) for arr in zip(*all_labels_test)]
-    preds_array = ['-'.join(map(str, arr)) for arr in zip(*all_preds_test)]
-    conf_matrix = confusion_matrix(y_true=labels_array, y_pred= preds_array, labels=class_labels)
+    class_labels = ['0-0-0', '1-0-0', '0-1-0', '0-0-1', '1-1-0', '0-1-1', '1-0-1', '1-1-1']
+    print(all_labels_test)
+    labels_array = ['{}-{}-{}'.format(int(line[0]), int(line[1]), int(line[2])) for line in all_labels_test]
+    preds_array = ['{}-{}-{}'.format(int(line[0]), int(line[1]), int(line[2])) for line in all_preds_test]
+    conf_matrix = confusion_matrix(y_true=labels_array, y_pred=preds_array, labels=class_labels)
+
     # Print confusion matrix with class labels
-    print("Confusion Matrix(bact-fung-ameba):")
+    print("Confusion Matrix (bact-fung-ameba):")
     print("\t" + "\t".join(class_labels))
     for i, row in enumerate(conf_matrix):
         print(f"{class_labels[i]}\t" + "\t".join(map(str, row)))
     elapsed_time = datetime.now() - start_time
     print(f"Test time", elapsed_time)
+    
     return metrics_per_subset,mean_confusion_matrix_bact,mean_confusion_matrix_fung,mean_confusion_matrix_ameb
+    
 def unflatten_dict(d, sep='_'):
     unflattened_dict = {}
     for k, v in d.items():
@@ -789,8 +786,6 @@ def flatten_dict(d, parent_key='', sep='_'):
         else:
             items.append((new_key, v))
     return dict(items)
-
-
 
 
 
@@ -833,7 +828,7 @@ if __name__ == "__main__":
             confidence_intervals[subset_name][metric] = {} 
             for task_name in tasks_list:
                 confidence_intervals[subset_name][metric][task_name] = {}
-                
+            
                 
     subset_comp = ['sex','age']
     p_values= {}
@@ -845,7 +840,7 @@ if __name__ == "__main__":
                 p_values[subset_comp][metric][task_name] = {}
 
     # CLI
-    parser = argparse.ArgumentParser(description='infection_type_multitask.py')
+    parser = argparse.ArgumentParser(description='infection_type.py')
     parser.add_argument('--num_tasks', type=int, default=3, required=False, help="Number of classes (to build the networks).")
     parser.add_argument('--epochs', type=int, default=200, required=False, help="Number of training epochs.")
     parser.add_argument('--model_names', nargs='+', type=str, required=False, default=['densenet121'], help="Model(s) to train.")
@@ -862,33 +857,42 @@ if __name__ == "__main__":
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 ])
+    """
+    # Load data
+
+    train_dataset = CorneaUnifespDataset(split="train", transform=transform)
+    val_dataset = CorneaUnifespDataset(split="validation", transform=transform)
+    test_dataset = CorneaUnifespDataset(split="test", transform=transform)
+    train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False)
+    test_loader = DataLoader(test_dataset, batch_size=16, shuffle=False)
+    """
     dataset = CorneaUnifespDataset(transform=transform)
- 
+
     # Hyperparameters and training settings
     num_tasks = args.num_tasks
     epochs = args.epochs
     model_names = args.model_names
-    analysis='infections_multitask_v1_final_200_semtweaks'
     names=['bacteria','fungi','ameba']
+    analysis='infections_multitask_v2_200_lossoff'
     print(analysis)
+    
     """
     for model_name in model_names:
         model = load_model(model_name, num_tasks)
         class_weights_per_task = []
         for task_idx in range(num_tasks):
-            print(task_idx)
             task_labels = train_dataset.labels[:, task_idx]
             unique_classes = np.unique(task_labels)
             weights = compute_class_weight(class_weight="balanced", classes=unique_classes, y=task_labels)
             positive_weight = weights[1]/weights[0]
             class_weights_per_task.append(positive_weight)
         class_weights_per_task=np.array(class_weights_per_task)
-        print(class_weights_per_task)
         class_weights=torch.from_numpy(class_weights_per_task)
         optimizer = torch.optim.Adam(model.parameters(), lr=1e-6)
         print("this node works")
-        train_and_evaluate(model, train_loader, val_loader, test_loader, class_weights, optimizer, epochs,num_tasks,model_name,analysis,names)
-        #print("model runed")"""
+        train_and_evaluate(model, train_loader, val_loader, test_loader, class_weights, optimizer, epochs,num_tasks,model_name,analysis,names,fold)
+        """
     batch_size = 16
     flipped_indices = np.array([i for i, img in enumerate(dataset.images) if 'flipped' in img]).astype(int)
     not_flipped_indices = np.array([i for i, img in enumerate(dataset.images) if 'flipped' not in img]).astype(int)
@@ -905,7 +909,7 @@ if __name__ == "__main__":
         X_test = np.array(img)[test_index.astype(int)]
         X_test = X_test[..., np.newaxis]
         y_test = np.array(labels)[test_index.astype(int)]
-
+    
         X_train, y_train,X_val, y_val = iterative_train_test_split(X_train,y_train,test_size= 0.1/0.9)
         
         flipped_filenames = []
@@ -923,25 +927,33 @@ if __name__ == "__main__":
             flipped_filename = f"{basename}_flipped.{extension}"
             flipped_filenames.append([flipped_filename])
         X_val = np.vstack((X_val, np.array(flipped_filenames)))
-        
+        """
         flipped_filenames = []
         for filenames_list in X_test:
             fname = filenames_list[0]
             basename, extension = fname.rsplit('.', 1)
             flipped_filename = f"{basename}_flipped.{extension}"
             flipped_filenames.append([flipped_filename])
-    
-        X_test = np.vstack((X_test, np.array(flipped_filenames)))   
-        
+        X_test = np.vstack((X_test, np.array(flipped_filenames)))
+        """
         train_indices = [dataset.images.index(fname) for fname in X_train]
+
         val_indices = [dataset.images.index(fname) for fname in X_val]
+        
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        save_dir = os.path.join(current_dir,'Results_10folds','multitask_v2')
+        model_name='densenet121'
+        plot_name=f'folds_{model_name}_{analysis}_{epochs}.csv'
+        full_plot_path = os.path.join(save_dir, plot_name)
+
+        X_test= get_test_indices(full_plot_path,fold)
+        print(X_test)
+        X_test=np.array(X_test)
         test_indices = [dataset.images.index(fname) for fname in X_test]
         
-
-        # TODO: Check this
-        # dataset_train=[dataset[idx] for idx in train_indices]
-        # dataset_val = [dataset[idx] for idx in val_indices]
-        # dataset_test = [dataset[idx] for idx in test_indices]
+        
+        # Create SubsetRandomSampler instances using the obtained indices
+        
         dataset_train = Subset(dataset=dataset, indices=train_indices)
         dataset_val = Subset(dataset=dataset, indices=val_indices)
         dataset_test = Subset(dataset=dataset, indices=test_indices)
@@ -967,17 +979,16 @@ if __name__ == "__main__":
             print(class_weights_per_task)
             class_weights=torch.from_numpy(class_weights_per_task)
             optimizer = torch.optim.Adam(model.parameters(), lr=1e-6,weight_decay=1e-8)
-            #optimizer = torch.optim.SGD(model.parameters(), lr=1e-6, momentum=0.9)
             print("this node works")
             elapsed_time = datetime.now() - start_time
             print(f"Time until start of fold {fold}:", elapsed_time)
-            metrics_per_subset,mean_confusion_matrix_bact,mean_confusion_matrix_fung,mean_confusion_matrix_ameb=train_and_evaluate(model, train_loader, val_loader,test_loader, class_weights, optimizer, epochs, num_tasks, model_name, analysis,fold,metrics_per_subset,mean_confusion_matrix_bact,mean_confusion_matrix_fung,mean_confusion_matrix_ameb)
+            metrics_per_subset,mean_confusion_matrix_bact,mean_confusion_matrix_fung,mean_confusion_matrix_ameb=train_and_evaluate(model, train_loader, val_loader,test_loader, class_weights, optimizer, epochs, num_tasks, model_name, analysis,names, fold,metrics_per_subset,mean_confusion_matrix_bact,mean_confusion_matrix_fung,mean_confusion_matrix_ameb)
             for subset_name_Save in subset_names:
                 for metric_Save in metrics:
                     for task_name_Save in tasks_list:
                         for fold_Save in range(1,num_folds+1):
                             metrics_for_comp[metric_Save][task_name_Save][subset_name_Save][fold_Save] = metrics_per_subset[subset_name_Save][metric_Save][task_name_Save][fold_Save]
-        print(metrics_for_comp) 
+        print(metrics_for_comp)            
         fold_info.append({
         "fold": fold,
         "train_fnames": X_train,
@@ -1005,7 +1016,7 @@ if __name__ == "__main__":
                 folds = folds_dict.keys()
                 # Calculate mean and standard deviation across all folds
                 values = [value for value in folds_dict.values() if isinstance(value, (int, float))]
-               
+            
                 mean_all_folds = np.mean(values)
                 std_dev_all_folds = np.std(values)
                 
@@ -1071,31 +1082,33 @@ if __name__ == "__main__":
                 if p_value < 0.05:
                     print(f"!p-value for {metric} and task {task_name} in {category}: {p_value} - differences are significant!")
                 else:
-                    print(f"p-value for {metric} and task {task_name} in {category}: {p_value} - differences are not significant")   
+                    print(f"p-value for {metric} and task {task_name} in {category}: {p_value} - differences are not significant")
+                    
+
+    pickle_files = {
+        "metrics_per_subset_lossoff.pkl": metrics_per_subset,
+        "confidence_intervals_lossoff.pkl": confidence_intervals,
+        "pvalues_lossoff.pkl": p_values,
+        "p_values_corrected_lossoff.pkl":corrected_p_values_dict
+    }
     
     #save pickles
     # Define the folder path to save the pickle files
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    folder_path = os.path.join(current_dir,'Results_10folds','multitask_v1')
+    folder_path = os.path.join(current_dir,'Results_10folds','multitask_v2')
     os.makedirs(folder_path, exist_ok=True)
     if not os.path.exists(folder_path):
         os.makedirs(folder_path)
-
-    pickle_files = {
-        "metrics_per_subsets_semtweaks.pkl": metrics_per_subset,
-        "confidence_intervals_semtweaks.pkl": confidence_intervals,
-        "pvalues_semtweaks.pkl": p_values,
-        "p_values_corrected_semtweaks.pkl":corrected_p_values_dict
-    }
     for file_name, data in pickle_files.items():
         # Combine the folder path and file name to get the full file path
         file_path = os.path.join(folder_path, file_name)
         with open(file_path, 'wb') as f:
             pickle.dump(data, f)
-   
+        
     #save folds
+    """
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    save_dir = os.path.join(current_dir,'Results_10folds','multitask_v1')
+    save_dir = os.path.join(current_dir,'Results_10folds','multitask_v2')
     os.makedirs(save_dir, exist_ok=True)
     plot_name=f'folds_{model_name}_{analysis}_{epochs}.csv'
     full_plot_path = os.path.join(save_dir, plot_name)
@@ -1105,4 +1118,5 @@ if __name__ == "__main__":
 
         writer.writeheader()
         writer.writerows(fold_info)
-    print("code is done, yey")
+    print("code is done, yey")"""
+
